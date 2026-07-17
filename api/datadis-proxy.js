@@ -71,8 +71,9 @@ export default async function handler(req, res) {
       headers: authHeaders,
     });
     if (!suppliesResp.ok) {
+      const detalle = await suppliesResp.text();
       return res.status(502).json({
-        error: `Error al consultar suministros (código ${suppliesResp.status}).`,
+        error: `Error al consultar suministros (código ${suppliesResp.status}): ${detalle}`,
       });
     }
     const supplies = await suppliesResp.json();
@@ -98,8 +99,9 @@ export default async function handler(req, res) {
     );
 
     if (!consumptionResp.ok) {
+      const detalle = await consumptionResp.text();
       return res.status(502).json({
-        error: `Error al descargar lecturas (código ${consumptionResp.status}).`,
+        error: `Error al descargar lecturas (código ${consumptionResp.status}): ${detalle}`,
       });
     }
 
