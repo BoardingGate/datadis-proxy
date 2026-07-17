@@ -10,6 +10,12 @@
  *   https://<tu-proyecto>.vercel.app/api/datadis-proxy
  */
 
+import { setDefaultResultOrder } from 'node:dns';
+
+// Fix conocido: Node 18/20 a veces falla con ENOTFOUND al intentar
+// resolver IPv6 primero en entornos serverless. Forzamos IPv4 primero.
+setDefaultResultOrder('ipv4first');
+
 // Cambia '*' por tu dominio real para restringir quién puede llamar al proxy.
 const ALLOWED_ORIGIN = '*';
 
@@ -108,7 +114,9 @@ export default async function handler(req, res) {
       consumptionData,
     });
   } catch (err) {
-    const causa = err.cause ? ` | causa: ${err.cause.code || err.cause.message || err.cause}` : '';
+    const causa = err.cause
+      ? ` | causa: ${err.cause.code || err.cause.message || err.cause}${err.cause.hostname ? ` (host: ${err.cause.hostname})` : ''}`
+      : '';
     return res.status(500).json({ error: `Error inesperado en el proxy: ${err.message}${causa}` });
   }
 }
