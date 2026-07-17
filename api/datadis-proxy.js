@@ -67,7 +67,7 @@ export default async function handler(req, res) {
     const authHeaders = { Authorization: `Bearer ${token}`, ...cabecerasNavegador };
 
     // 2. Suministros -> localizar CUPS
-    const suppliesResp = await fetch('https://api.datadis.es/api/v1/supplies', {
+    const suppliesResp = await fetch('https://datadis.es/api-private/api/get-supplies', {
       headers: authHeaders,
     });
     if (!suppliesResp.ok) {
@@ -93,7 +93,7 @@ export default async function handler(req, res) {
     });
 
     const consumptionResp = await fetch(
-      `https://api.datadis.es/api/v1/consumption-data?${params.toString()}`,
+      `https://datadis.es/api-private/api/get-consumption-data?${params.toString()}`,
       { headers: authHeaders }
     );
 
