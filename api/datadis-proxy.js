@@ -108,6 +108,7 @@ export default async function handler(req, res) {
       consumptionData,
     });
   } catch (err) {
-    return res.status(500).json({ error: `Error inesperado en el proxy: ${err.message}` });
+    const causa = err.cause ? ` | causa: ${err.cause.code || err.cause.message || err.cause}` : '';
+    return res.status(500).json({ error: `Error inesperado en el proxy: ${err.message}${causa}` });
   }
 }
