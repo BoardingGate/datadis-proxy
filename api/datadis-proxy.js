@@ -87,7 +87,31 @@ export default async function handler(req, res) {
 
     // --- BIFURCACIÓN SEGÚN LA ACCIÓN ---
 
-    if (action === 'contracts') {
+    if (action === 'max-power') {
+      // 3. FLUJO DE POTENCIAS MÁXIMAS (Manual de la API, Pág. 11)
+      const paramsMaxPower = new URLSearchParams({
+        cups: supply.cups,
+        distributorCode: supply.distributorCode || '',
+        startDate, // Formato esperado por esta API: YYYY/MM
+        endDate,   // Formato esperado por esta API: YYYY/MM
+      });
+
+      const maxPowerResp = await fetch(
+        `https://datadis.es/api-private/api/get-max-power?${paramsMaxPower.toString()}`,
+        { headers: authHeaders }
+      );
+
+      if (!maxPowerResp.ok) {
+        const detalle = await maxPowerResp.text();
+        return res.status(502).json({
+          error: `Error al consultar potencias máximas (código ${maxPowerResp.status}): ${detalle}`,
+        });
+      }
+
+      const maxPowerData = await maxPowerResp.json();
+      return res.status(200).json(maxPowerData);
+
+    } else if (action === 'contracts') {
       // 3. FLUJO DE CONTRATO (Manual de la API, Pág. 7 y 8)
       const paramsContrato = new URLSearchParams({
         cups: supply.cups,
@@ -110,11 +134,11 @@ export default async function handler(req, res) {
       return res.status(200).json(contractData);
 
     } else {
-      // 3. FLUJO DE CONSUMO ESTÁNDAR (Existente y sin alterar)
+      // 3. FLUJO DE CONSUMO ESTÁNDAR
       const params = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate, // formato esperado por Datadis: YYYY/MM/DD
+        startDate, // formato esperado por Datadis: YYYY/MM/DD o YYYY/MM
         endDate,
         measurementType: '0',
         pointType: String(supply.pointType || 5),
