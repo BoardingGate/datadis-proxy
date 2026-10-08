@@ -31,33 +31,46 @@ export default async function handler(req, res) {
   const cabecerasNavegador = { 'User-Agent': 'Mozilla/5.0 (compatible; AnalizadorConsumo/1.0)' };
 
 // =========================================================================
-  // BIFURCACIÓN CNMC: EXTRACTOR DIRECTO DE LISTADO POR HASH
+  // EXTRACTOR REAL DE OFERTAS CNMC POR HASH
   // =========================================================================
   if (action === 'cnmc-extract' || (action === 'cnmc' && body.listUrl)) {
     try {
-      const targetUrl = (body.listUrl || '').trim();
+      const rawUrl = (body.listUrl || '').trim();
 
-      const cnmcResp = await fetch(targetUrl, {
+      // Extraer el hash hexadecimal de la URL
+      const hashMatch = rawUrl.match(/listado\/([A-F0-9]+)/i);
+      if (!hashMatch) {
+        return res.status(400).json({
+          error: 'La URL no contiene un identificador de listado de la CNMC válido.'
+        });
+      }
+
+      const hash = hashMatch[1];
+
+      // Endpoint REST interno de la CNMC que devuelve el JSON real con todas las ofertas
+      const apiUrl = `https://comparador.cnmc.gob.es/comparador/rest/ofertas/listado/${hash}`;
+
+      const cnmcResp = await fetch(apiUrl, {
         headers: {
+          'Accept': 'application/json, text/plain, */*',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+          'Referer': rawUrl
         }
       });
 
       if (!cnmcResp.ok) {
         return res.status(cnmcResp.status).json({
-          error: `No se pudo descargar el listado de la CNMC (Código ${cnmcResp.status})`
+          error: `El servidor de la CNMC rechazó la consulta (Código HTTP ${cnmcResp.status})`
         });
       }
 
-      const html = await cnmcResp.text();
-
-      // Devolvemos el HTML a tu web para que su motor iA extraiga las ofertas
-      return res.status(200).json({ html: html });
+      // La CNMC devuelve directamente el JSON con todas las ofertas reales
+      const data = await cnmcResp.json();
+      return res.status(200).json(data);
 
     } catch (err) {
       return res.status(500).json({
-        error: `Error al extraer ofertas de la CNMC: ${err.message}`
+        error: `Error al conectar con la API de la CNMC: ${err.message}`
       });
     }
   }
