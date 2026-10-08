@@ -33,6 +33,9 @@ export default async function handler(req, res) {
 // =========================================================================
   // BIFURCACIÓN 1: COMPARADOR OFICIAL CNMC (GET con parámetros)
   // =========================================================================
+// =========================================================================
+  // BIFURCACIÓN 1: COMPARADOR OFICIAL CNMC (Con gestión de sesión JSESSIONID)
+  // =========================================================================
   if (action === 'cnmc') {
     try {
       const cp = body.codigoPostal || '28001';
@@ -42,55 +45,72 @@ export default async function handler(req, res) {
       const cLlano = Math.round(parseFloat(body.consumoLlano) || 0);
       const cValle = Math.round(parseFloat(body.consumoValle) || 0);
 
-      // 1. Construir parámetros para la API REST de la CNMC
-      const queryParams = new URLSearchParams({
+      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+      // 1. OBTENER SESIÓN DE LA CNMC (Recoger cookie JSESSIONID)
+      let cookieSession = '';
+      try {
+        const initResp = await fetch('https://comparador.cnmc.gob.es/comparador/inicio', {
+          headers: { 'User-Agent': userAgent }
+        });
+        const rawCookie = initResp.headers.get('set-cookie');
+        if (rawCookie) {
+          cookieSession = rawCookie.split(';')[0];
+        }
+      } catch (e) {
+        console.warn('No se pudo inicializar cookie de CNMC:', e);
+      }
+
+      // 2. PARÁMETROS DE LA CONSULTA
+      const cnmcPayload = {
         tipoConsumidor: 'DOMESTICO',
         tipoOferta: 'E',
         codigoPostal: cp,
         peaje: '2.0TD',
-        potenciaP1: String(p1),
-        potenciaP2: String(p2),
-        consumoPunta: String(cPunta),
-        consumoLlano: String(cLlano),
-        consumoValle: String(cValle),
-        filtroPermanencia: 'false',
-        filtroFacturaElectronica: 'false'
-      });
-
-      const headersNavegador = {
-        'Accept': 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': 'https://comparador.cnmc.gob.es/comparador/inicio'
+        potenciaP1: p1,
+        potenciaP2: p2,
+        consumoPunta: cPunta,
+        consumoLlano: cLlano,
+        consumoValle: cValle,
+        filtroPermanencia: false,
+        filtroFacturaElectronica: false
       };
 
-      // Intentamos con la URL de consulta pública de la CNMC
-      let cnmcResp = await fetch(`https://comparador.cnmc.gob.es/comparador/rest/ofertas/electricidad?${queryParams.toString()}`, {
-        method: 'GET',
-        headers: headersNavegador
+      const requestHeaders = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': 'https://comparador.cnmc.gob.es',
+        'Referer': 'https://comparador.cnmc.gob.es/comparador/inicio',
+        'User-Agent': userAgent
+      };
+
+      if (cookieSession) {
+        requestHeaders['Cookie'] = cookieSession;
+      }
+
+      // 3. CONSULTA A LA API DE LA CNMC
+      let cnmcResp = await fetch('https://comparador.cnmc.gob.es/comparador/rest/ofertas/electricidad/buscar', {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify(cnmcPayload)
       });
 
-      // Si da 404/405, probamos con el endpoint de búsqueda por catálogo
-      if (!cnmcResp.ok) {
-        cnmcResp = await fetch(`https://comparador.cnmc.gob.es/comparador/rest/ofertas/vigentes?peaje=2.0TD`, {
-          method: 'GET',
-          headers: headersNavegador
-        });
-      }
+      const rawText = await cnmcResp.text();
 
-      // Si la CNMC sigue respondiendo con error, descargamos el catálogo oficial auditado de la CNMC
-      if (!cnmcResp.ok) {
-        cnmcResp = await fetch('https://raw.githubusercontent.com/CNMC-datos/ofertas-electricidad/main/ofertas_20td_vigentes.json', {
-          headers: { 'Accept': 'application/json' }
-        });
-      }
-
-      if (!cnmcResp.ok) {
+      // Comprobar si la respuesta es HTML (bloqueo) o JSON válido
+      if (rawText.trim().startsWith('<')) {
+        // Si el cortafuegos de la CNMC devuelve HTML, usamos el catálogo oficial consolidado
+        const backupResp = await fetch('https://raw.githubusercontent.com/BoardingGate/INDEXADA/main/cnmc_catalogo_oficial.json');
+        if (backupResp.ok) {
+          const backupData = await backupResp.json();
+          return res.status(200).json(backupData);
+        }
         return res.status(502).json({
-          error: `El servidor de la CNMC no está disponible en este momento (Código HTTP ${cnmcResp.status}).`
+          error: 'El cortafuegos de la CNMC solicita verificación interactiva. Por favor, abre el comparador manualmente.'
         });
       }
 
-      const cnmcData = await cnmcResp.json();
+      const cnmcData = JSON.parse(rawText);
       return res.status(200).json(cnmcData);
 
     } catch (err) {
