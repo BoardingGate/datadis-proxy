@@ -31,34 +31,33 @@ export default async function handler(req, res) {
   const cabecerasNavegador = { 'User-Agent': 'Mozilla/5.0 (compatible; AnalizadorConsumo/1.0)' };
 
 // =========================================================================
-  // BIFURCACIÓN 1: CATÁLOGO OFICIAL COMPARADOR CNMC
+  // BIFURCACIÓN CNMC: EXTRACTOR DIRECTO DE LISTADO POR HASH
   // =========================================================================
-  if (action === 'cnmc') {
+  if (action === 'cnmc-extract' || (action === 'cnmc' && body.listUrl)) {
     try {
-      // 1. Intentamos consultar el feed abierto del comparador de la CNMC
-      let cnmcResp = await fetch('https://raw.githubusercontent.com/CNMC-datos/ofertas-electricidad/main/ofertas_20td_vigentes.json', {
-        headers: { 'Accept': 'application/json' }
+      const targetUrl = (body.listUrl || '').trim();
+
+      const cnmcResp = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
       });
 
-      // 2. Si no responde el principal, consultamos el feed mirror auditado
       if (!cnmcResp.ok) {
-        cnmcResp = await fetch('https://raw.githubusercontent.com/BoardingGate/INDEXADA/main/cnmc_catalogo_oficial.json', {
-          headers: { 'Accept': 'application/json' }
+        return res.status(cnmcResp.status).json({
+          error: `No se pudo descargar el listado de la CNMC (Código ${cnmcResp.status})`
         });
       }
 
-      if (!cnmcResp.ok) {
-        return res.status(502).json({
-          error: 'No se pudo descargar el catálogo oficial de tarifas de la CNMC.'
-        });
-      }
+      const html = await cnmcResp.text();
 
-      const cnmcData = await cnmcResp.json();
-      return res.status(200).json(cnmcData);
+      // Devolvemos el HTML a tu web para que su motor iA extraiga las ofertas
+      return res.status(200).json({ html: html });
 
     } catch (err) {
       return res.status(500).json({
-        error: `Error al obtener catálogo de la CNMC: ${err.message}`
+        error: `Error al extraer ofertas de la CNMC: ${err.message}`
       });
     }
   }
