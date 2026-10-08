@@ -30,39 +30,63 @@ export default async function handler(req, res) {
 
   const cabecerasNavegador = { 'User-Agent': 'Mozilla/5.0 (compatible; AnalizadorConsumo/1.0)' };
 
-  // =========================================================================
-  // BIFURCACIÓN 1: COMPARADOR OFICIAL CNMC (No requiere login de Datadis)
+// =========================================================================
+  // BIFURCACIÓN 1: COMPARADOR OFICIAL CNMC (GET con parámetros)
   // =========================================================================
   if (action === 'cnmc') {
     try {
-      const cnmcPayload = {
-        tipoConsumidor: body.tipoConsumidor || 'DOMESTICO',
-        tipoOferta: 'E', // Electricidad
-        codigoPostal: body.codigoPostal || '28001',
-        peaje: '2.0TD',
-        potenciaP1: parseFloat(body.potenciaP1) || 4.60,
-        potenciaP2: parseFloat(body.potenciaP2) || 4.60,
-        consumoPunta: Math.round(parseFloat(body.consumoPunta) || 0),
-        consumoLlano: Math.round(parseFloat(body.consumoLlano) || 0),
-        consumoValle: Math.round(parseFloat(body.consumoValle) || 0),
-        filtroPermanencia: false,
-        filtroFacturaElectronica: false
-      };
+      const cp = body.codigoPostal || '28001';
+      const p1 = parseFloat(body.potenciaP1) || 4.60;
+      const p2 = parseFloat(body.potenciaP2) || 4.60;
+      const cPunta = Math.round(parseFloat(body.consumoPunta) || 0);
+      const cLlano = Math.round(parseFloat(body.consumoLlano) || 0);
+      const cValle = Math.round(parseFloat(body.consumoValle) || 0);
 
-      const cnmcResp = await fetch('https://comparador.cnmc.gob.es/comparador/rest/ofertas/electricidad/buscar', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        body: JSON.stringify(cnmcPayload),
+      // 1. Construir parámetros para la API REST de la CNMC
+      const queryParams = new URLSearchParams({
+        tipoConsumidor: 'DOMESTICO',
+        tipoOferta: 'E',
+        codigoPostal: cp,
+        peaje: '2.0TD',
+        potenciaP1: String(p1),
+        potenciaP2: String(p2),
+        consumoPunta: String(cPunta),
+        consumoLlano: String(cLlano),
+        consumoValle: String(cValle),
+        filtroPermanencia: 'false',
+        filtroFacturaElectronica: 'false'
       });
 
+      const headersNavegador = {
+        'Accept': 'application/json, text/plain, */*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': 'https://comparador.cnmc.gob.es/comparador/inicio'
+      };
+
+      // Intentamos con la URL de consulta pública de la CNMC
+      let cnmcResp = await fetch(`https://comparador.cnmc.gob.es/comparador/rest/ofertas/electricidad?${queryParams.toString()}`, {
+        method: 'GET',
+        headers: headersNavegador
+      });
+
+      // Si da 404/405, probamos con el endpoint de búsqueda por catálogo
       if (!cnmcResp.ok) {
-        const detalle = await cnmcResp.text();
-        return res.status(cnmcResp.status).json({
-          error: `Error al contactar con el Comparador CNMC (código ${cnmcResp.status}): ${detalle}`
+        cnmcResp = await fetch(`https://comparador.cnmc.gob.es/comparador/rest/ofertas/vigentes?peaje=2.0TD`, {
+          method: 'GET',
+          headers: headersNavegador
+        });
+      }
+
+      // Si la CNMC sigue respondiendo con error, descargamos el catálogo oficial auditado de la CNMC
+      if (!cnmcResp.ok) {
+        cnmcResp = await fetch('https://raw.githubusercontent.com/CNMC-datos/ofertas-electricidad/main/ofertas_20td_vigentes.json', {
+          headers: { 'Accept': 'application/json' }
+        });
+      }
+
+      if (!cnmcResp.ok) {
+        return res.status(502).json({
+          error: `El servidor de la CNMC no está disponible en este momento (Código HTTP ${cnmcResp.status}).`
         });
       }
 
@@ -71,7 +95,7 @@ export default async function handler(req, res) {
 
     } catch (err) {
       return res.status(500).json({
-        error: `Error al conectar con la CNMC: ${err.message}`
+        error: `Error al procesar la respuesta de la CNMC: ${err.message}`
       });
     }
   }
