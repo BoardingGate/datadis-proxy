@@ -1,15 +1,22 @@
 /**
- * Proxy para la API privada de Datadis.es y el Comparador Oficial CNMC
- * versión Vercel (Node.js Serverless Function)
+ * Proxy para la API privada de Datadis.es — versión Vercel (Node.js Serverless Function)
  * ----------------------------------------------------------------------------------------
- * Ruta: api/datadis-proxy.js
+ * Mismo comportamiento que el Worker de Cloudflare, pero corre en la red de Vercel
+ * (AWS Lambda), evitando el conflicto Cloudflare-a-Cloudflare que provoca el error 530
+ * al llamar a api.datadis.es desde un Worker.
+ *
+ * Ruta del archivo importante para Vercel: api/datadis-proxy.js
+ * Una vez desplegado, la URL pública será:
+ *   https://<tu-proyecto>.vercel.app/api/datadis-proxy
  */
 
 import { setDefaultResultOrder } from 'node:dns';
 
-// Fix conocido: Node 18/20 en serverless
+// Fix conocido: Node 18/20 a veces falla con ENOTFOUND al intentar
+// resolver IPv6 primero en entornos serverless. Forzamos IPv4 primero.
 setDefaultResultOrder('ipv4first');
 
+// Cambia '*' por tu dominio real para restringir quién puede llamar al proxy.
 const ALLOWED_ORIGIN = '*';
 
 export default async function handler(req, res) {
@@ -25,64 +32,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Método no permitido. Usa POST.' });
   }
 
-  const body = req.body || {};
-  const { username, password, cups, startDate, endDate, action } = body;
+  // Destructuramos también el campo "action" enviado por el frontend
+  const { username, password, cups, startDate, endDate, action } = req.body || {};
 
-  const cabecerasNavegador = { 'User-Agent': 'Mozilla/5.0 (compatible; AnalizadorConsumo/1.0)' };
-
-// =========================================================================
-  // EXTRACTOR REAL DE OFERTAS CNMC POR HASH
-  // =========================================================================
-  if (action === 'cnmc-extract' || (action === 'cnmc' && body.listUrl)) {
-    try {
-      const rawUrl = (body.listUrl || '').trim();
-
-      // Extraer el hash hexadecimal de la URL
-      const hashMatch = rawUrl.match(/listado\/([A-F0-9]+)/i);
-      if (!hashMatch) {
-        return res.status(400).json({
-          error: 'La URL no contiene un identificador de listado de la CNMC válido.'
-        });
-      }
-
-      const hash = hashMatch[1];
-
-      // Endpoint REST interno de la CNMC que devuelve el JSON real con todas las ofertas
-      const apiUrl = `https://comparador.cnmc.gob.es/comparador/rest/ofertas/listado/${hash}`;
-
-      const cnmcResp = await fetch(apiUrl, {
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Referer': rawUrl
-        }
-      });
-
-      if (!cnmcResp.ok) {
-        return res.status(cnmcResp.status).json({
-          error: `El servidor de la CNMC rechazó la consulta (Código HTTP ${cnmcResp.status})`
-        });
-      }
-
-      // La CNMC devuelve directamente el JSON con todas las ofertas reales
-      const data = await cnmcResp.json();
-      return res.status(200).json(data);
-
-    } catch (err) {
-      return res.status(500).json({
-        error: `Error al conectar con la API de la CNMC: ${err.message}`
-      });
-    }
-  }
-
-  // =========================================================================
-  // BIFURCACIÓN 2: DATADIS (Requiere credenciales)
-  // =========================================================================
   if (!username || !password || !startDate || !endDate) {
     return res.status(400).json({
       error: 'Faltan campos obligatorios: username, password, startDate, endDate.',
     });
   }
+
+  const cabecerasNavegador = { 'User-Agent': 'Mozilla/5.0 (compatible; AnalizadorConsumo/1.0)' };
 
   try {
     // 1. Login -> obtener token
@@ -126,14 +85,15 @@ export default async function handler(req, res) {
     const supply = cups ? supplies.find((s) => s.cups === cups) || supplies[0] : supplies[0];
 
 
-    // --- ACCIONES ESPECÍFICAS DE DATADIS ---
+    // --- BIFURCACIÓN SEGÚN LA ACCIÓN ---
 
     if (action === 'max-power') {
+      // 3. FLUJO DE POTENCIAS MÁXIMAS (Manual de la API, Pág. 11)
       const paramsMaxPower = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate,
-        endDate,
+        startDate, // Formato esperado por esta API: YYYY/MM
+        endDate,   // Formato esperado por esta API: YYYY/MM
       });
 
       const maxPowerResp = await fetch(
@@ -152,6 +112,7 @@ export default async function handler(req, res) {
       return res.status(200).json(maxPowerData);
 
     } else if (action === 'contracts') {
+      // 3. FLUJO DE CONTRATO (Manual de la API, Pág. 7 y 8)
       const paramsContrato = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
@@ -173,11 +134,11 @@ export default async function handler(req, res) {
       return res.status(200).json(contractData);
 
     } else {
-      // Flujo de consumo estándar
+      // 3. FLUJO DE CONSUMO ESTÁNDAR
       const params = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate,
+        startDate, // formato esperado por Datadis: YYYY/MM/DD o YYYY/MM
         endDate,
         measurementType: '0',
         pointType: String(supply.pointType || 5),
