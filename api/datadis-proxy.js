@@ -1,6 +1,22 @@
+/**
+ * Proxy para la API privada de Datadis.es — versión Vercel (Node.js Serverless Function)
+ * ----------------------------------------------------------------------------------------
+ * Mismo comportamiento que el Worker de Cloudflare, pero corre en la red de Vercel
+ * (AWS Lambda), evitando el conflicto Cloudflare-a-Cloudflare que provoca el error 530
+ * al llamar a api.datadis.es desde un Worker.
+ *
+ * Ruta del archivo importante para Vercel: api/datadis-proxy.js
+ * Una vez desplegado, la URL pública será:
+ *   https://<tu-proyecto>.vercel.app/api/datadis-proxy
+ */
+
 import { setDefaultResultOrder } from 'node:dns';
+
+// Fix conocido: Node 18/20 a veces falla con ENOTFOUND al intentar
+// resolver IPv6 primero en entornos serverless. Forzamos IPv4 primero.
 setDefaultResultOrder('ipv4first');
 
+// Cambia '*' por tu dominio real para restringir quién puede llamar al proxy.
 const ALLOWED_ORIGIN = '*';
 
 export default async function handler(req, res) {
@@ -16,7 +32,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Método no permitido. Usa POST.' });
   }
 
-  // Capturamos también "action" por si se piden contratos o potencias máximas
+  // Destructuramos también el campo "action" enviado por el frontend
   const { username, password, cups, startDate, endDate, action } = req.body || {};
 
   if (!username || !password || !startDate || !endDate) {
@@ -68,33 +84,61 @@ export default async function handler(req, res) {
 
     const supply = cups ? supplies.find((s) => s.cups === cups) || supplies[0] : supplies[0];
 
+
     // --- BIFURCACIÓN SEGÚN LA ACCIÓN ---
+
     if (action === 'max-power') {
+      // 3. FLUJO DE POTENCIAS MÁXIMAS (Manual de la API, Pág. 11)
       const paramsMaxPower = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate, 
-        endDate,   
+        startDate, // Formato esperado por esta API: YYYY/MM
+        endDate,   // Formato esperado por esta API: YYYY/MM
       });
-      const maxPowerResp = await fetch(`https://datadis.es/api-private/api/get-max-power?${paramsMaxPower.toString()}`, { headers: authHeaders });
-      if (!maxPowerResp.ok) return res.status(502).json({ error: `Error potencias máximas: ${await maxPowerResp.text()}` });
-      return res.status(200).json(await maxPowerResp.json());
+
+      const maxPowerResp = await fetch(
+        `https://datadis.es/api-private/api/get-max-power?${paramsMaxPower.toString()}`,
+        { headers: authHeaders }
+      );
+
+      if (!maxPowerResp.ok) {
+        const detalle = await maxPowerResp.text();
+        return res.status(502).json({
+          error: `Error al consultar potencias máximas (código ${maxPowerResp.status}): ${detalle}`,
+        });
+      }
+
+      const maxPowerData = await maxPowerResp.json();
+      return res.status(200).json(maxPowerData);
 
     } else if (action === 'contracts') {
+      // 3. FLUJO DE CONTRATO (Manual de la API, Pág. 7 y 8)
       const paramsContrato = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
       });
-      const contractResp = await fetch(`https://datadis.es/api-private/api/get-contract-detail?${paramsContrato.toString()}`, { headers: authHeaders });
-      if (!contractResp.ok) return res.status(502).json({ error: `Error contrato: ${await contractResp.text()}` });
-      return res.status(200).json(await contractResp.json());
+
+      const contractResp = await fetch(
+        `https://datadis.es/api-private/api/get-contract-detail?${paramsContrato.toString()}`,
+        { headers: authHeaders }
+      );
+
+      if (!contractResp.ok) {
+        const detalle = await contractResp.text();
+        return res.status(502).json({
+          error: `Error al consultar detalle del contrato (código ${contractResp.status}): ${detalle}`,
+        });
+      }
+
+      const contractData = await contractResp.json();
+      return res.status(200).json(contractData);
 
     } else {
-      // 3. Lecturas de consumo estándar (Datadis espera YYYY/MM/DD)
+      // 3. FLUJO DE CONSUMO ESTÁNDAR
       const params = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate, 
+        startDate, // formato esperado por Datadis: YYYY/MM
         endDate,
         measurementType: '0',
         pointType: String(supply.pointType || 5),
@@ -113,7 +157,13 @@ export default async function handler(req, res) {
       }
 
       const consumptionData = await consumptionResp.json();
-      if (!Array.isArray(consumptionData) || consumptionData.length === 0) {
+      
+      // Aseguramos que sea un array válido antes de enviarlo al frontend
+      if (!Array.isArray(consumptionData)) {
+        return res.status(400).json({ error: 'Datadis devolvió una respuesta no válida para el consumo.', raw: consumptionData });
+      }
+
+      if (consumptionData.length === 0) {
         return res.status(404).json({ error: 'No hay lecturas disponibles para ese período.' });
       }
 
@@ -123,6 +173,7 @@ export default async function handler(req, res) {
         consumptionData,
       });
     }
+
   } catch (err) {
     const causa = err.cause
       ? ` | causa: ${err.cause.code || err.cause.message || err.cause}${err.cause.hostname ? ` (host: ${err.cause.hostname})` : ''}`
