@@ -15,7 +15,7 @@ import { setDefaultResultOrder } from 'node:dns';
 // Fix conocido: Node 18/20 a veces falla con ENOTFOUND al intentar
 // resolver IPv6 primero en entornos serverless. Forzamos IPv4 primero.
 setDefaultResultOrder('ipv4first');
-
+F
 // Cambia '*' por tu dominio real para restringir quién puede llamar al proxy.
 const ALLOWED_ORIGIN = '*';
 
@@ -133,13 +133,19 @@ export default async function handler(req, res) {
       const contractData = await contractResp.json();
       return res.status(200).json(contractData);
 
-    } else {
+} else {
       // 3. FLUJO DE CONSUMO ESTÁNDAR
+      // Nos aseguramos de que si startDate viene con formato de mes (YYYY/MM), 
+      // se le añada el día '01' o se respete el formato YYYY/MM/DD si ya lo trae.
+      const formattedStartDate = startDate.length === 7 ? `${startDate}/01` : startDate;
+      // Para la fecha fin, si viene en YYYY/MM, podemos calcular el último día o dejarla tal cual.
+      const formattedEndDate = endDate;
+
       const params = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate, // formato esperado por Datadis: YYYY/MM/DD o YYYY/MM
-        endDate,
+        startDate: formattedStartDate, 
+        endDate: formattedEndDate,
         measurementType: '0',
         pointType: String(supply.pointType || 5),
       });
