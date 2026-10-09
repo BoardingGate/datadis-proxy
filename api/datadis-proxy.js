@@ -135,14 +135,11 @@ export default async function handler(req, res) {
 
 } else {
       // 3. FLUJO DE CONSUMO ESTÁNDAR
-      // Transformamos YYYY/MM en YYYY/MM/01 para que la API de Datadis acepte el formato de día
-      const formattedStartDate = startDate.length === 7 ? `${startDate}/01` : startDate;
-
       const params = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate: formattedStartDate, 
-        endDate, // endDate puede enviarse como YYYY/MM y Datadis devuelve todo el mes
+        startDate, // formato YYYY/MM
+        endDate,   // formato YYYY/MM
         measurementType: '0',
         pointType: String(supply.pointType || 5),
       });
