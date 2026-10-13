@@ -1,22 +1,12 @@
 /**
  * Proxy para la API privada de Datadis.es — versión Vercel (Node.js Serverless Function)
- * ----------------------------------------------------------------------------------------
- * Mismo comportamiento que el Worker de Cloudflare, pero corre en la red de Vercel
- * (AWS Lambda), evitando el conflicto Cloudflare-a-Cloudflare que provoca el error 530
- * al llamar a api.datadis.es desde un Worker.
- *
- * Ruta del archivo en tu repositorio/proyecto: api/datadis-proxy.js
- * URL pública en Vercel:
- *   https://<tu-proyecto>.vercel.app/api/datadis-proxy
+ * Ruta del archivo: api/datadis-proxy.js
  */
 
 import { setDefaultResultOrder } from 'node:dns';
 
-// Fix conocido: Node 18/20 a veces falla con ENOTFOUND al intentar
-// resolver IPv6 primero en entornos serverless. Forzamos IPv4 primero.
 setDefaultResultOrder('ipv4first');
 
-// Cambia '*' por tu dominio real si deseas restringir quién puede llamar al proxy.
 const ALLOWED_ORIGIN = '*';
 
 export default async function handler(req, res) {
@@ -32,10 +22,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Método no permitido. Usa POST.' });
   }
 
-  // Destructuramos los campos enviados por el frontend
   const { username, password, cups, startDate, endDate, action } = req.body || {};
 
-  // Para 'contracts' las fechas no son estrictamente obligatorias; para el resto sí
   if (!username || !password || ((!startDate || !endDate) && action !== 'contracts')) {
     return res.status(400).json({
       error: 'Faltan campos obligatorios: username, password, startDate, endDate.',
@@ -44,11 +32,21 @@ export default async function handler(req, res) {
 
   const cabecerasNavegador = { 'User-Agent': 'Mozilla/5.0 (compatible; AnalizadorConsumo/1.0)' };
 
-  // Helper para asegurar fechas con barras requeridas por Datadis
-  const toSlashDate = (str) => (str ? String(str).replace(/-/g, '/').trim() : '');
+  // Formateador estricto a YYYY/MM según manual oficial de Datadis
+  const toDatadisMonth = (str) => {
+    if (!str) return '';
+    const clean = String(str).replace(/-/g, '/').trim();
+    const parts = clean.split('/');
+    if (parts.length >= 2) {
+      const y = parts[0].length === 4 ? parts[0] : parts[2];
+      const m = parts[1].padStart(2, '0');
+      return `${y}/${m}`;
+    }
+    return clean.substring(0, 7);
+  };
 
   try {
-    // 1. Login -> obtener token Bearer
+    // 1. Login -> obtener token
     const loginResp = await fetch('https://datadis.es/nikola-auth/tokens/login', {
       method: 'POST',
       headers: {
@@ -71,7 +69,7 @@ export default async function handler(req, res) {
 
     const authHeaders = { Authorization: `Bearer ${token}`, ...cabecerasNavegador };
 
-    // 2. Suministros -> localizar CUPS y distributorCode
+    // 2. Suministros -> localizar CUPS
     const suppliesResp = await fetch('https://datadis.es/api-private/api/get-supplies', {
       headers: authHeaders,
     });
@@ -88,19 +86,15 @@ export default async function handler(req, res) {
 
     const supply = cups ? supplies.find((s) => s.cups === cups) || supplies[0] : supplies[0];
 
-
     // --- BIFURCACIÓN SEGÚN LA ACCIÓN ---
 
     if (action === 'max-power') {
-      // 3. FLUJO DE POTENCIAS MÁXIMAS (Manual API Datadis: formato mensual YYYY/MM)
-      const cleanStart = toSlashDate(startDate).substring(0, 7);
-      const cleanEnd = toSlashDate(endDate).substring(0, 7);
-
+      // Manual API Datadis pág. 11: YYYY/MM
       const paramsMaxPower = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate: cleanStart, // YYYY/MM
-        endDate: cleanEnd,     // YYYY/MM
+        startDate: toDatadisMonth(startDate),
+        endDate: toDatadisMonth(endDate),
       });
 
       const maxPowerResp = await fetch(
@@ -119,7 +113,7 @@ export default async function handler(req, res) {
       return res.status(200).json(maxPowerData);
 
     } else if (action === 'contracts') {
-      // 3. FLUJO DE CONTRATO (Manual API Datadis: get-contract-detail con cups y distributorCode)
+      // Manual API Datadis pág. 7 y 8
       const paramsContrato = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
@@ -141,15 +135,15 @@ export default async function handler(req, res) {
       return res.status(200).json(contractData);
 
     } else {
-      // 3. FLUJO DE CONSUMO HORARIO ESTÁNDAR (Manual API Datadis: get-consumption-data exige YYYY/MM/DD)
-      const cleanStart = toSlashDate(startDate);
-      const cleanEnd = toSlashDate(endDate);
+      // Manual API Datadis pág. 9 y 10: startDate y endDate en formato YYYY/MM
+      const formattedStart = toDatadisMonth(startDate);
+      const formattedEnd = toDatadisMonth(endDate);
 
       const params = new URLSearchParams({
         cups: supply.cups,
         distributorCode: supply.distributorCode || '',
-        startDate: cleanStart, // YYYY/MM/DD con barras
-        endDate: cleanEnd,     // YYYY/MM/DD con barras
+        startDate: formattedStart,
+        endDate: formattedEnd,
         measurementType: '0',
         pointType: String(supply.pointType || 5),
       });
@@ -161,14 +155,13 @@ export default async function handler(req, res) {
 
       if (!consumptionResp.ok) {
         const detalle = await consumptionResp.text();
-        return res.status(502).json({
+        return res.status(consumptionResp.status).json({
           error: `Error al descargar lecturas (código ${consumptionResp.status}): ${detalle}`,
         });
       }
 
       const consumptionData = await consumptionResp.json();
 
-      // Aseguramos que sea un array válido antes de responder
       if (!Array.isArray(consumptionData)) {
         return res.status(400).json({
           error: 'Datadis devolvió una respuesta no válida para el consumo.',
