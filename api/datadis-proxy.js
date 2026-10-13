@@ -32,8 +32,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Método no permitido. Usa POST.' });
   }
 
-  // Destructuramos también el campo "action" enviado por el frontend
-  const { username, password, cups, startDate, endDate, action } = req.body || {};
+  const { username, password, cups, startDate, endDate } = req.body || {};
 
   if (!username || !password || !startDate || !endDate) {
     return res.status(400).json({
@@ -84,96 +83,38 @@ export default async function handler(req, res) {
 
     const supply = cups ? supplies.find((s) => s.cups === cups) || supplies[0] : supplies[0];
 
+    // 3. Lecturas de consumo
+    const params = new URLSearchParams({
+      cups: supply.cups,
+      distributorCode: supply.distributorCode || '',
+      startDate, // formato esperado por Datadis: YYYY/MM/DD
+      endDate,
+      measurementType: '0',
+      pointType: String(supply.pointType || 5),
+    });
 
-    // --- BIFURCACIÓN SEGÚN LA ACCIÓN ---
+    const consumptionResp = await fetch(
+      `https://datadis.es/api-private/api/get-consumption-data?${params.toString()}`,
+      { headers: authHeaders }
+    );
 
-    if (action === 'max-power') {
-      // 3. FLUJO DE POTENCIAS MÁXIMAS (Manual de la API, Pág. 11)
-      const paramsMaxPower = new URLSearchParams({
-        cups: supply.cups,
-        distributorCode: supply.distributorCode || '',
-        startDate, // Formato esperado por esta API: YYYY/MM
-        endDate,   // Formato esperado por esta API: YYYY/MM
-      });
-
-      const maxPowerResp = await fetch(
-        `https://datadis.es/api-private/api/get-max-power?${paramsMaxPower.toString()}`,
-        { headers: authHeaders }
-      );
-
-      if (!maxPowerResp.ok) {
-        const detalle = await maxPowerResp.text();
-        return res.status(502).json({
-          error: `Error al consultar potencias máximas (código ${maxPowerResp.status}): ${detalle}`,
-        });
-      }
-
-      const maxPowerData = await maxPowerResp.json();
-      return res.status(200).json(maxPowerData);
-
-    } else if (action === 'contracts') {
-      // 3. FLUJO DE CONTRATO (Manual de la API, Pág. 7 y 8)
-      const paramsContrato = new URLSearchParams({
-        cups: supply.cups,
-        distributorCode: supply.distributorCode || '',
-      });
-
-      const contractResp = await fetch(
-        `https://datadis.es/api-private/api/get-contract-detail?${paramsContrato.toString()}`,
-        { headers: authHeaders }
-      );
-
-      if (!contractResp.ok) {
-        const detalle = await contractResp.text();
-        return res.status(502).json({
-          error: `Error al consultar detalle del contrato (código ${contractResp.status}): ${detalle}`,
-        });
-      }
-
-      const contractData = await contractResp.json();
-      return res.status(200).json(contractData);
-
-    } else {
-      // 3. FLUJO DE CONSUMO ESTÁNDAR
-      const params = new URLSearchParams({
-        cups: supply.cups,
-        distributorCode: supply.distributorCode || '',
-        startDate, // formato esperado por Datadis: YYYY/MM
-        endDate,
-        measurementType: '0',
-        pointType: String(supply.pointType || 5),
-      });
-
-      const consumptionResp = await fetch(
-        `https://datadis.es/api-private/api/get-consumption-data?${params.toString()}`,
-        { headers: authHeaders }
-      );
-
-      if (!consumptionResp.ok) {
-        const detalle = await consumptionResp.text();
-        return res.status(502).json({
-          error: `Error al descargar lecturas (código ${consumptionResp.status}): ${detalle}`,
-        });
-      }
-
-      const consumptionData = await consumptionResp.json();
-      
-      // Aseguramos que sea un array válido antes de enviarlo al frontend
-      if (!Array.isArray(consumptionData)) {
-        return res.status(400).json({ error: 'Datadis devolvió una respuesta no válida para el consumo.', raw: consumptionData });
-      }
-
-      if (consumptionData.length === 0) {
-        return res.status(404).json({ error: 'No hay lecturas disponibles para ese período.' });
-      }
-
-      return res.status(200).json({
-        cups: supply.cups,
-        supplies: supplies.map((s) => s.cups),
-        consumptionData,
+    if (!consumptionResp.ok) {
+      const detalle = await consumptionResp.text();
+      return res.status(502).json({
+        error: `Error al descargar lecturas (código ${consumptionResp.status}): ${detalle}`,
       });
     }
 
+    const consumptionData = await consumptionResp.json();
+    if (!Array.isArray(consumptionData) || consumptionData.length === 0) {
+      return res.status(404).json({ error: 'No hay lecturas disponibles para ese período.' });
+    }
+
+    return res.status(200).json({
+      cups: supply.cups,
+      supplies: supplies.map((s) => s.cups),
+      consumptionData,
+    });
   } catch (err) {
     const causa = err.cause
       ? ` | causa: ${err.cause.code || err.cause.message || err.cause}${err.cause.hostname ? ` (host: ${err.cause.hostname})` : ''}`
